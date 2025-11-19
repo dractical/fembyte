@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dractical <dracticalrblx@gmail.com>
+Date: Wed, 19 Nov 2025 11:30:26 -0500
+Subject: [PATCH] even faster random ticking
+
+
+diff --git a/net/minecraft/world/level/chunk/LevelChunkSection.java b/net/minecraft/world/level/chunk/LevelChunkSection.java
+index df717c545472006b99532280c38c1fbef12bcf82..22485df47c6d6cd966a27b66491d097146ea3305 100644
+--- a/net/minecraft/world/level/chunk/LevelChunkSection.java
++++ b/net/minecraft/world/level/chunk/LevelChunkSection.java
+@@ -1,6 +1,5 @@
+ package net.minecraft.world.level.chunk;
+ 
+-import java.util.function.Predicate;
+ import net.minecraft.core.Holder;
+ import net.minecraft.core.Registry;
+ import net.minecraft.network.FriendlyByteBuf;
+@@ -13,7 +12,9 @@ import net.minecraft.world.level.block.Blocks;
+ import net.minecraft.world.level.block.state.BlockState;
+ import net.minecraft.world.level.material.FluidState;
+ 
+-public class LevelChunkSection implements ca.spottedleaf.moonrise.patches.block_counting.BlockCountingChunkSection { // Paper - block counting
++import java.util.function.Predicate;
++
++public class LevelChunkSection implements ca.spottedleaf.moonrise.patches.block_counting.BlockCountingChunkSection, com.dractical.fembyte.perf.DensityAccumulatorHolder { // Paper - block counting // fembyte - even faster random tick
+     public static final int SECTION_WIDTH = 16;
+     public static final int SECTION_HEIGHT = 16;
+     public static final int SECTION_SIZE = 4096;
+@@ -24,6 +25,8 @@ public class LevelChunkSection implements ca.spottedleaf.moonrise.patches.block_
+     public final PalettedContainer<BlockState> states;
+     private PalettedContainer<Holder<Biome>> biomes; // CraftBukkit - read/write
+ 
++    private float fembyte$densityAccumulator; // fembyte - store accumulator on section
++
+     // Paper start - block counting
+     private static final it.unimi.dsi.fastutil.shorts.ShortArrayList FULL_LIST = new it.unimi.dsi.fastutil.shorts.ShortArrayList(16*16*16);
+     static {
+@@ -326,4 +329,16 @@ public class LevelChunkSection implements ca.spottedleaf.moonrise.patches.block_
+     public LevelChunkSection copy() {
+         return new LevelChunkSection(this);
+     }
++
++    // fembyte start - even faster random tick
++    @Override
++    public float fembyte$getDensityAccumulator() {
++        return this.fembyte$densityAccumulator;
++    }
++
++    @Override
++    public void fembyte$setDensityAccumulator(final float value) {
++        this.fembyte$densityAccumulator = value;
++    }
++    // fembyte end - even faster random tick
+ }

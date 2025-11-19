@@ -1,14 +1,11 @@
 package com.dractical.fembyte.perf;
 
-import com.dractical.fembyte.config.modules.performance.RandomTickModule;
 import ca.spottedleaf.moonrise.common.list.ShortList;
 import ca.spottedleaf.moonrise.common.util.SimpleThreadUnsafeRandom;
 import ca.spottedleaf.moonrise.common.util.WorldUtil;
 import ca.spottedleaf.moonrise.patches.block_counting.BlockCountingChunkSection;
-import it.unimi.dsi.fastutil.longs.Long2FloatMap;
-import it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap;
+import com.dractical.fembyte.config.modules.performance.RandomTickModule;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.state.BlockState;
@@ -23,13 +20,11 @@ public final class DensityTickSystem {
     private final ServerLevel level;
     private final SimpleThreadUnsafeRandom random;
     private final boolean doubleTickFluids;
-    private final Long2FloatMap sectionAccumulators = new Long2FloatOpenHashMap();
 
     public DensityTickSystem(final ServerLevel level, final SimpleThreadUnsafeRandom random) {
         this.level = level;
         this.random = random;
         this.doubleTickFluids = !ca.spottedleaf.moonrise.common.PlatformHooks.get().configFixMC224294();
-        this.sectionAccumulators.defaultReturnValue(0.0F);
     }
 
     public void tick(final LevelChunk chunk, final int tickSpeed) {
@@ -47,10 +42,6 @@ public final class DensityTickSystem {
             return;
         }
 
-        if (RandomTickModule.DENSITY_DISTRIBUTION != RandomTickModule.DensityDistribution.SMOOTHED_ACCUMULATOR) {
-            this.sectionAccumulators.clear();
-        }
-
         final ChunkPos chunkPos = chunk.getPos();
         final int minSection = WorldUtil.getMinSection(this.level);
         final int offsetX = chunkPos.x << 4;
@@ -59,14 +50,18 @@ public final class DensityTickSystem {
         for (int sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
             final LevelChunkSection section = sections[sectionIndex];
             if (!section.isRandomlyTickingBlocks()) {
-                this.sectionAccumulators.remove(SectionPos.asLong(chunkPos.x, sectionIndex + minSection, chunkPos.z));
+                if (RandomTickModule.DENSITY_DISTRIBUTION == RandomTickModule.DensityDistribution.SMOOTHED_ACCUMULATOR) {
+                    section.fembyte$setDensityAccumulator(0.0F);
+                }
                 continue;
             }
 
-            final ShortList tickList = ((BlockCountingChunkSection)section).moonrise$getTickingBlockList();
+            final ShortList tickList = ((BlockCountingChunkSection) section).moonrise$getTickingBlockList();
             final int tickingBlocks = tickList.size();
             if (tickingBlocks <= 0) {
-                this.sectionAccumulators.remove(SectionPos.asLong(chunkPos.x, sectionIndex + minSection, chunkPos.z));
+                if (RandomTickModule.DENSITY_DISTRIBUTION == RandomTickModule.DensityDistribution.SMOOTHED_ACCUMULATOR) {
+                    section.fembyte$setDensityAccumulator(0.0F);
+                }
                 continue;
             }
 
@@ -75,8 +70,7 @@ public final class DensityTickSystem {
                 lambda = Math.min(lambda, RandomTickModule.DENSITY_MAX_LAMBDA);
             }
 
-            final long sectionKey = SectionPos.asLong(chunkPos.x, sectionIndex + minSection, chunkPos.z);
-            int ticks = this.sampleTickCount(sectionKey, lambda);
+            int ticks = this.sampleTickCount(section, lambda);
             if (RandomTickModule.DENSITY_MAX_TICKS_PER_SECTION > 0) {
                 ticks = Math.min(ticks, RandomTickModule.DENSITY_MAX_TICKS_PER_SECTION);
             }
@@ -89,15 +83,15 @@ public final class DensityTickSystem {
         }
     }
 
-    private int sampleTickCount(final long sectionKey, final double lambda) {
+    private int sampleTickCount(final LevelChunkSection section, final double lambda) {
         if (lambda <= 0.0D) {
-            this.sectionAccumulators.remove(sectionKey);
+            section.fembyte$setDensityAccumulator(0.0F);
             return 0;
         }
 
         return switch (RandomTickModule.DENSITY_DISTRIBUTION) {
             case POISSON -> this.samplePoisson(lambda);
-            case SMOOTHED_ACCUMULATOR -> this.sampleWithAccumulator(sectionKey, lambda);
+            case SMOOTHED_ACCUMULATOR -> this.sampleWithAccumulator(section, lambda);
         };
     }
 
@@ -119,13 +113,13 @@ public final class DensityTickSystem {
 
         final double gaussian = this.random.nextGaussian();
         final double value = lambda + gaussian * Math.sqrt(lambda);
-        final int rounded = (int)Math.round(value);
+        final int rounded = (int) Math.round(value);
         return Math.max(0, rounded);
     }
 
-    private int sampleWithAccumulator(final long sectionKey, final double lambda) {
-        double accumulator = this.sectionAccumulators.get(sectionKey) + lambda;
-        int wholeTicks = (int)Math.floor(accumulator);
+    private int sampleWithAccumulator(final LevelChunkSection section, final double lambda) {
+        double accumulator = section.fembyte$getDensityAccumulator() + lambda;
+        int wholeTicks = (int) Math.floor(accumulator);
         accumulator -= wholeTicks;
         if (accumulator > 0.0D && this.random.nextDouble() < accumulator) {
             ++wholeTicks;
@@ -133,9 +127,9 @@ public final class DensityTickSystem {
         }
 
         if (accumulator <= 0.0D) {
-            this.sectionAccumulators.remove(sectionKey);
+            section.fembyte$setDensityAccumulator(0.0F);
         } else {
-            this.sectionAccumulators.put(sectionKey, (float)accumulator);
+            section.fembyte$setDensityAccumulator((float) accumulator);
         }
 
         return Math.max(0, wholeTicks);
@@ -144,7 +138,7 @@ public final class DensityTickSystem {
     private void dispatchRandomTicks(final LevelChunkSection section, final ShortList tickList, final int ticks, final int offsetX, final int offsetY, final int offsetZ) {
         final var states = section.states;
         for (int iteration = 0; iteration < ticks; iteration++) {
-            final int location = (int)tickList.getRaw(this.random.nextInt(tickList.size())) & 0xFFFF;
+            final int location = (int) tickList.getRaw(this.random.nextInt(tickList.size())) & 0xFFFF;
             final BlockState state = states.get(location);
             final BlockPos pos = new BlockPos(
                     (location & 15) | offsetX,
@@ -177,7 +171,7 @@ public final class DensityTickSystem {
                 continue;
             }
 
-            final ShortList tickList = ((BlockCountingChunkSection)section).moonrise$getTickingBlockList();
+            final ShortList tickList = ((BlockCountingChunkSection) section).moonrise$getTickingBlockList();
 
             for (int i = 0; i < tickSpeed; ++i) {
                 final int tickingBlocks = tickList.size();
@@ -187,7 +181,7 @@ public final class DensityTickSystem {
                     continue;
                 }
 
-                final int location = (int)tickList.getRaw(index) & 0xFFFF;
+                final int location = (int) tickList.getRaw(index) & 0xFFFF;
                 final BlockState state = states.get(location);
 
                 final BlockPos pos = new BlockPos(
