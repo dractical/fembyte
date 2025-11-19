@@ -1,0 +1,171 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: dractical <dracticalrblx@gmail.com>
+Date: Wed, 19 Nov 2025 12:51:05 -0500
+Subject: [PATCH] async mob spawning
+
+
+diff --git a/net/minecraft/server/level/ServerChunkCache.java b/net/minecraft/server/level/ServerChunkCache.java
+index 2882cd829d4d8e1f8615f085f6908efcdf68ac62..71db3ef3b77213c37b1d776a0e67ff8f9f03178a 100644
+--- a/net/minecraft/server/level/ServerChunkCache.java
++++ b/net/minecraft/server/level/ServerChunkCache.java
+@@ -1,23 +1,13 @@
+ package net.minecraft.server.level;
+ 
++import com.dractical.fembyte.concurrent.Async;
++import com.dractical.fembyte.config.modules.async.MobSpawningModule;
+ import com.google.common.annotations.VisibleForTesting;
+ import com.mojang.datafixers.DataFixer;
+ import com.mojang.logging.LogUtils;
+ import it.unimi.dsi.fastutil.longs.LongSet;
+ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+ import it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet;
+-import java.io.IOException;
+-import java.nio.file.Path;
+-import java.util.Arrays;
+-import java.util.List;
+-import java.util.Set;
+-import java.util.concurrent.CompletableFuture;
+-import java.util.concurrent.CompletionStage;
+-import java.util.concurrent.Executor;
+-import java.util.function.BooleanSupplier;
+-import java.util.function.Consumer;
+-import java.util.function.Supplier;
+-import javax.annotation.Nullable;
+ import net.minecraft.FileUtil;
+ import net.minecraft.Util;
+ import net.minecraft.core.BlockPos;
+@@ -32,19 +22,8 @@ import net.minecraft.util.thread.BlockableEventLoop;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.MobCategory;
+ import net.minecraft.world.entity.ai.village.poi.PoiManager;
+-import net.minecraft.world.level.ChunkPos;
+-import net.minecraft.world.level.GameRules;
+-import net.minecraft.world.level.Level;
+-import net.minecraft.world.level.LightLayer;
+-import net.minecraft.world.level.LocalMobCapCalculator;
+-import net.minecraft.world.level.NaturalSpawner;
+-import net.minecraft.world.level.TicketStorage;
+-import net.minecraft.world.level.chunk.ChunkAccess;
+-import net.minecraft.world.level.chunk.ChunkGenerator;
+-import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
+-import net.minecraft.world.level.chunk.ChunkSource;
+-import net.minecraft.world.level.chunk.LevelChunk;
+-import net.minecraft.world.level.chunk.LightChunk;
++import net.minecraft.world.level.*;
++import net.minecraft.world.level.chunk.*;
+ import net.minecraft.world.level.chunk.status.ChunkStatus;
+ import net.minecraft.world.level.chunk.storage.ChunkScanAccess;
+ import net.minecraft.world.level.entity.ChunkStatusUpdateListener;
+@@ -55,6 +34,20 @@ import net.minecraft.world.level.storage.DimensionDataStorage;
+ import net.minecraft.world.level.storage.LevelStorageSource;
+ import org.slf4j.Logger;
+ 
++import javax.annotation.Nullable;
++import java.io.IOException;
++import java.nio.file.Path;
++import java.util.Arrays;
++import java.util.List;
++import java.util.Set;
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.CompletionStage;
++import java.util.concurrent.Executor;
++import java.util.concurrent.TimeUnit;
++import java.util.function.BooleanSupplier;
++import java.util.function.Consumer;
++import java.util.function.Supplier;
++
+ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moonrise.patches.chunk_system.world.ChunkSystemServerChunkCache { // Paper - rewrite chunk system
+     private static final Logger LOGGER = LogUtils.getLogger();
+     private final DistanceManager distanceManager;
+@@ -541,9 +534,10 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+     private void tickChunks(ProfilerFiller profiler, long timeInhabited) {
+         profiler.popPush("naturalSpawnCount");
+         int naturalSpawnChunkCount = this.distanceManager.getNaturalSpawnChunkCount();
++        // fembyte start - async mob spawning
++        boolean shouldCountPerPlayer = (this.spawnFriendlies || this.spawnEnemies) && this.level.paperConfig().entities.spawning.perPlayerMobSpawns; // don't count mobs when animals and monsters are disabled
+         // Paper start - Optional per player mob spawns
+-        NaturalSpawner.SpawnState spawnState;
+-        if ((this.spawnFriendlies || this.spawnEnemies) && this.level.paperConfig().entities.spawning.perPlayerMobSpawns) { // don't count mobs when animals and monsters are disabled
++        if (shouldCountPerPlayer) {
+             // re-set mob counts
+             for (ServerPlayer player : this.level.players) {
+                 // Paper start - per player mob spawning backoff
+@@ -558,11 +552,27 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+                 }
+                 // Paper end - per player mob spawning backoff
+             }
+-            spawnState = NaturalSpawner.createState(naturalSpawnChunkCount, this.level.getAllEntities(), this::getFullChunk, null, true);
+-        } else {
+-            spawnState = NaturalSpawner.createState(naturalSpawnChunkCount, this.level.getAllEntities(), this::getFullChunk, !this.level.paperConfig().entities.spawning.perPlayerMobSpawns ? new LocalMobCapCalculator(this.chunkMap) : null, false);
+         }
++        Iterable<Entity> entitySource = this.level.getAllEntities();
++        Iterable<Entity> asyncEntitySource = entitySource;
+         // Paper end - Optional per player mob spawns
++        CompletableFuture<NaturalSpawner.SpawnState> spawnStateFuture = null;
++        NaturalSpawner.SpawnState spawnState;
++        if (MobSpawningModule.ENABLED) { // Fembyte - async mob spawning
++            final boolean finalShouldCountPerPlayer = shouldCountPerPlayer;
++            asyncEntitySource = this.snapshotEntities(entitySource);
++            final Iterable<Entity> capturedSource = asyncEntitySource;
++            spawnStateFuture = Async.supplyCpu(() ->
++                this.buildSpawnState(naturalSpawnChunkCount, finalShouldCountPerPlayer, capturedSource)
++            );
++            spawnState = null;
++        } else {
++            spawnState = this.buildSpawnState(naturalSpawnChunkCount, shouldCountPerPlayer, entitySource);
++        }
++        if (spawnStateFuture != null) {
++            spawnState = this.awaitSpawnStateFuture(spawnStateFuture, naturalSpawnChunkCount, shouldCountPerPlayer, entitySource);
++        }
++        // fembyte end - async mob spawning
+         this.lastSpawnState = spawnState;
+         profiler.popPush("spawnAndTick");
+         boolean _boolean = this.level.getGameRules().getBoolean(GameRules.RULE_DOMOBSPAWNING) && !this.level.players().isEmpty(); // CraftBukkit
+@@ -625,6 +635,47 @@ public class ServerChunkCache extends ChunkSource implements ca.spottedleaf.moon
+         }
+     }
+ 
++    // fembyte start - async mob spawning
++    private NaturalSpawner.SpawnState awaitSpawnStateFuture(
++            CompletableFuture<NaturalSpawner.SpawnState> future,
++            int naturalSpawnChunkCount,
++            boolean shouldCountPerPlayer,
++            Iterable<Entity> fallbackEntities
++    ) {
++        long timeout = MobSpawningModule.CALCULATION_TIMEOUT_MS;
++        try {
++            if (timeout > 0L) {
++                return future.get(timeout, TimeUnit.MILLISECONDS);
++            }
++            return future.join();
++        } catch (InterruptedException ex) {
++            Thread.currentThread().interrupt();
++            LOGGER.warn("Async mob spawning calculation interrupted; falling back to synchronous execution.");
++        } catch (Exception ex) {
++            LOGGER.warn("Failed to compute async mob spawning state; falling back to synchronous execution.", ex);
++        }
++        future.cancel(true);
++        return this.buildSpawnState(naturalSpawnChunkCount, shouldCountPerPlayer, fallbackEntities);
++    }
++
++    private NaturalSpawner.SpawnState buildSpawnState(int naturalSpawnChunkCount, boolean shouldCountPerPlayer, Iterable<Entity> entitySource) {
++        if (shouldCountPerPlayer) {
++            return NaturalSpawner.createState(naturalSpawnChunkCount, entitySource, this::getFullChunk, null, true);
++        }
++        LocalMobCapCalculator calculator = !this.level.paperConfig().entities.spawning.perPlayerMobSpawns
++            ? new LocalMobCapCalculator(this.chunkMap) : null;
++        return NaturalSpawner.createState(naturalSpawnChunkCount, entitySource, this::getFullChunk, calculator, false);
++    }
++
++    private Iterable<Entity> snapshotEntities(Iterable<Entity> source) {
++        final ObjectArrayList<Entity> snapshot = new ObjectArrayList<>();
++        for (Entity entity : source) {
++            snapshot.add(entity);
++        }
++        return snapshot;
++    }
++    // fembyte end - async mob spawning
++
+     private void getFullChunk(long chunkPos, Consumer<LevelChunk> fullChunkGetter) {
+         // Paper start - rewrite chunk system
+         // note: bypass currentlyLoaded from getChunkNow
