@@ -72,8 +72,7 @@ public final class AsyncExecutors {
     }
 
     private static void handleUncaughtException(Thread t, Throwable e) {
-        logger.error("Uncaught exception in thread {}: {}", t.getName(), e.getMessage());
-        e.printStackTrace(System.err);
+        logger.error("Uncaught exception in thread " + t.getName() + ": " + e.getMessage(), e);
     }
 
     public static void shutdownAll() {
