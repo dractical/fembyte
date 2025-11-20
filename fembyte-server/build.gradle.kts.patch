@@ -50,6 +50,19 @@
      implementation("ca.spottedleaf:concurrentutil:0.0.3")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
+@@ -137,6 +_,12 @@
+     implementation("net.kyori:adventure-text-serializer-ansi")
+     runtimeConfiguration(sourceSets.main.map { it.runtimeClasspath })
+ 
++    // Fembyte start - config library
++    implementation("com.github.thatsmusic99:ConfigurationMaster-API:v2.0.0-rc.3") { // Leaf config
++        exclude(group = "org.yaml", module = "snakeyaml")
++    }
++    // Fembyte end - config library
++
+     /*
+       Required to add the missing Log4j2Plugins.dat file from log4j-core
+       which has been removed by Mojang. Without it, log4j has to classload
 @@ -200,14 +_,14 @@
          val gitBranch = git.exec(providers, "rev-parse", "--abbrev-ref", "HEAD").get().trim()
          attributes(
